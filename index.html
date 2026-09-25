@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TraceWeaver-AI - Digital Forensics & Fragment Reconstruction</title>
+    <meta name="description" content="An AI-driven digital forensics tool that reconstructs, classifies, and analyzes corrupted data fragments into actionable investigative insights. TraceWeaver-AI goes beyond traditional file carving using statistical entropy and LLMs to analyze raw disk images, piece together fragmented evidence, assess data integrity, and generate plain-English forensic timelines for incident response teams." />
+    <meta property="og:title" content="TraceWeaver-AI - Digital Forensics & Fragment Reconstruction" />
+    <meta property="og:description" content="An AI-driven digital forensics tool that reconstructs, classifies, and analyzes corrupted data fragments into actionable investigative insights. TraceWeaver-AI goes beyond traditional file carving using statistical entropy and LLMs to analyze raw disk images, piece together fragmented evidence, assess data integrity, and generate plain-English forensic timelines for incident response teams." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <script>
+      // Gracefully suppress benign Vite HMR WebSocket connection notices in proxy/preview environments
+      window.addEventListener('unhandledrejection', function (event) {
+        var str = String(event.reason || '') + ' ' + String(event.reason && event.reason.message ? event.reason.message : '');
+        if (str.toLowerCase().includes('websocket')) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+        }
+      }, true);
+      window.addEventListener('error', function (event) {
+        var str = String(event.message || '') + ' ' + String(event.error ? event.error.message : '');
+        if (str.toLowerCase().includes('websocket')) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+        }
+      }, true);
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

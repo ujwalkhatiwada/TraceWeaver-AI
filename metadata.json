@@ -1,0 +1,6 @@
+{
+  "name": "AegisCarve - AI-Assisted Digital Evidence Recovery",
+  "description": "An AI-driven digital forensics tool that reconstructs, classifies, and analyzes corrupted data fragments into actionable investigative insights. TraceWeaver-AI goes beyond traditional file carving using statistical entropy and LLMs to analyze raw disk images, piece together fragmented evidence, assess data integrity, and generate plain-English forensic timelines for incident response teams.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
