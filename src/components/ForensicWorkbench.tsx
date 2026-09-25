@@ -20,6 +20,7 @@ import {
   ChevronRight,
   Sparkles,
   Clock,
+  Upload,
 } from 'lucide-react';
 import {
   EvidenceFragment,
@@ -35,6 +36,9 @@ interface ForensicWorkbenchProps {
   onBackToWebsite: () => void;
   onOpenPreview: (fragment: EvidenceFragment) => void;
   onOpenPython: () => void;
+  onOpenUpload?: () => void;
+  onSelectScenario?: (scenario: 'ironvault' | 'antiforensics' | 'flashcorrupt') => void;
+  onDownloadCurrentDisk?: () => void;
 }
 
 type WorkbenchTab =
@@ -53,6 +57,9 @@ export const ForensicWorkbench: React.FC<ForensicWorkbenchProps> = ({
   onBackToWebsite,
   onOpenPreview,
   onOpenPython,
+  onOpenUpload,
+  onSelectScenario,
+  onDownloadCurrentDisk,
 }) => {
   const [activeTab, setActiveTab] = useState<WorkbenchTab>('overview');
 
@@ -470,6 +477,16 @@ Demonstration dataset created for Hackathon Track 01.
 
           {/* Right Action buttons */}
           <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+            {onOpenUpload && (
+              <button
+                onClick={onOpenUpload}
+                className="text-xs font-mono text-[#374151] hover:text-[#111827] px-2.5 py-1.5 rounded border border-[#D1D5DB] hover:bg-[#F9FAFB] inline-flex items-center gap-1.5 cursor-pointer font-medium bg-white shadow-2xs"
+                title="Upload custom raw .dd forensic disk image"
+              >
+                <Upload className="w-3.5 h-3.5 text-[#2563EB]" />
+                <span className="hidden sm:inline">Upload .dd</span>
+              </button>
+            )}
             <button
               onClick={onOpenPython}
               className="text-xs font-mono text-[#4B5563] hover:text-[#1F2937] px-2.5 py-1.5 rounded border border-[#E5E7EB] hover:bg-[#F9FAFB] hidden md:inline-flex items-center gap-1.5 cursor-pointer"
@@ -494,7 +511,9 @@ Demonstration dataset created for Hackathon Track 01.
             <span className="text-[10px] font-mono uppercase text-[#6B7280] block">
               Disk Sectors
             </span>
-            <span className="text-xl sm:text-2xl font-bold text-[#1F2937]">256</span>
+            <span className="text-xl sm:text-2xl font-bold text-[#1F2937]">
+              {sectors.length || metadata.sectorCount || 256}
+            </span>
             <span className="text-[11px] text-[#6B7280] block mt-0.5">512 Bytes / Sector</span>
           </div>
 
@@ -502,15 +521,21 @@ Demonstration dataset created for Hackathon Track 01.
             <span className="text-[10px] font-mono uppercase text-[#6B7280] block">
               Disk Image Size
             </span>
-            <span className="text-xl sm:text-2xl font-bold text-[#1F2937]">128 KB</span>
-            <span className="text-[11px] text-[#6B7280] block mt-0.5">image.dd Volume</span>
+            <span className="text-xl sm:text-2xl font-bold text-[#1F2937]">
+              {(metadata.totalSize / 1024).toFixed(0)} KB
+            </span>
+            <span className="text-[11px] text-[#6B7280] block mt-0.5 truncate" title={metadata.filename}>
+              {metadata.filename}
+            </span>
           </div>
 
           <div className="p-3 bg-[#F8F9FA] border border-[#E5E7EB] rounded-lg">
             <span className="text-[10px] font-mono uppercase text-[#6B7280] block">
               Recovered Files
             </span>
-            <span className="text-xl sm:text-2xl font-bold text-[#2563EB]">5</span>
+            <span className="text-xl sm:text-2xl font-bold text-[#2563EB]">
+              {fragments.length}
+            </span>
             <span className="text-[11px] text-[#6B7280] block mt-0.5">Carved & Stitched</span>
           </div>
 
@@ -522,7 +547,9 @@ Demonstration dataset created for Hackathon Track 01.
               <ShieldCheck className="w-5 h-5 inline text-[#16A34A]" />
               SHA-256
             </span>
-            <span className="text-[11px] text-[#6B7280] block mt-0.5">Cryptographically Verified</span>
+            <span className="text-[11px] text-[#6B7280] block mt-0.5 font-mono truncate" title={metadata.sha256}>
+              {metadata.sha256 ? `${metadata.sha256.substring(0, 14)}...` : 'Verified'}
+            </span>
           </div>
         </div>
       </div>
@@ -678,23 +705,29 @@ Demonstration dataset created for Hackathon Track 01.
               <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
                 <div className="p-3 bg-[#F9FAFB] border border-[#E5E7EB] rounded-lg text-center">
                   <span className="text-[10px] font-mono text-[#6B7280] block">RECOVERED FILES</span>
-                  <span className="text-xl font-bold text-[#1F2937]">5</span>
+                  <span className="text-xl font-bold text-[#1F2937]">{fragments.length}</span>
                 </div>
                 <div className="p-3 bg-[#F0FDF4] border border-[#BBF7D0] rounded-lg text-center">
                   <span className="text-[10px] font-mono text-[#16A34A] block">INTACT</span>
-                  <span className="text-xl font-bold text-[#16A34A]">1</span>
+                  <span className="text-xl font-bold text-[#16A34A]">
+                    {fragments.filter((f) => f.status === 'INTACT').length}
+                  </span>
                 </div>
                 <div className="p-3 bg-[#FFFBEB] border border-[#FDE68A] rounded-lg text-center">
                   <span className="text-[10px] font-mono text-[#D97706] block">PARTIALLY REC.</span>
-                  <span className="text-xl font-bold text-[#D97706]">1</span>
+                  <span className="text-xl font-bold text-[#D97706]">
+                    {fragments.filter((f) => f.status === 'PARTIALLY_RECOVERABLE').length}
+                  </span>
                 </div>
                 <div className="p-3 bg-[#EFF6FF] border border-[#BFDBFE] rounded-lg text-center">
                   <span className="text-[10px] font-mono text-[#2563EB] block">STITCHED</span>
-                  <span className="text-xl font-bold text-[#2563EB]">1</span>
+                  <span className="text-xl font-bold text-[#2563EB]">
+                    {fragments.filter((f) => f.chunks && f.chunks.some((c) => c.stitched)).length}
+                  </span>
                 </div>
                 <div className="p-3 bg-[#F9FAFB] border border-[#E5E7EB] rounded-lg text-center">
-                  <span className="text-[10px] font-mono text-[#4B5563] block">RECOVERED</span>
-                  <span className="text-xl font-bold text-[#4B5563]">2</span>
+                  <span className="text-[10px] font-mono text-[#4B5563] block">TOTAL SECTORS</span>
+                  <span className="text-xl font-bold text-[#4B5563]">{sectors.length || 256}</span>
                 </div>
               </div>
 
@@ -799,6 +832,63 @@ Demonstration dataset created for Hackathon Track 01.
                       )}
                     </tbody>
                   </table>
+                </div>
+              </div>
+
+              {/* Storage Media & Acquisition Profile */}
+              <div className="p-4 bg-[#F8F9FA] border border-[#E5E7EB] rounded-lg space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div>
+                    <h4 className="text-xs font-mono font-bold uppercase tracking-wider text-[#1F2937] flex items-center gap-1.5">
+                      <HardDrive className="w-3.5 h-3.5 text-[#2563EB]" />
+                      Acquired Storage Bitstream Profile
+                    </h4>
+                    <p className="text-[11px] text-[#6B7280] mt-0.5">
+                      {metadata.scenarioDescription || 'Raw forensic bitstream under write-blocked analysis.'}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {onOpenUpload && (
+                      <button
+                        onClick={onOpenUpload}
+                        className="px-3 py-1.5 bg-white border border-[#D1D5DB] text-[#2563EB] hover:bg-blue-50 text-xs font-medium rounded-md shadow-2xs inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Upload className="w-3.5 h-3.5" />
+                        <span>Upload Custom .dd</span>
+                      </button>
+                    )}
+                    {onDownloadCurrentDisk && (
+                      <button
+                        onClick={onDownloadCurrentDisk}
+                        className="px-3 py-1.5 bg-white border border-[#D1D5DB] text-[#374151] hover:bg-neutral-50 text-xs font-medium rounded-md shadow-2xs inline-flex items-center gap-1.5 cursor-pointer"
+                        title="Download raw bitstream file to test in external tools"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        <span>Export .dd</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px] font-mono bg-white p-2.5 rounded border border-[#E5E7EB]">
+                  <div>
+                    <span className="text-[#6B7280] block text-[10px]">IMAGE NAME</span>
+                    <span className="font-semibold text-[#1F2937] truncate block" title={metadata.filename}>
+                      {metadata.filename}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[#6B7280] block text-[10px]">MASTER SHA-256</span>
+                    <span className="font-semibold text-[#16A34A] truncate block" title={metadata.sha256}>
+                      {metadata.sha256 ? `${metadata.sha256.substring(0, 18)}...` : 'N/A'}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[#6B7280] block text-[10px]">CHAIN OF CUSTODY</span>
+                    <span className="text-emerald-700 font-semibold block">
+                      Read-Only Bitstream Verified
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>

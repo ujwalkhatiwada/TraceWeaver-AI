@@ -23,6 +23,7 @@ TraceWeaver-AI solves these challenges by combining **bi-directional fragment st
 
 ## 🚀 Key Features
 
+- **Custom .dd File Upload & Parsing:** Ingest any raw forensic bitstream (`.dd`, `.raw`, `.img`, `.bin`, `.001`) directly in the browser with 100% client-side Web Crypto parsing (zero bytes leave the machine).
 - **Bi-Directional Fragment Stitching:** Reconnects fragmented Office OpenXML / ZIP files separated by unallocated zero gaps (bridging non-contiguous clusters).
 - **Multi-Factor Integrity Assessment:** Combines Shannon entropy, null-byte ratios, and format-specific structural validation to distinguish between zero-wiping routines, plaintext, and encrypted/compressed streams.
 - **SQLite Freelist Carving:** Recovers "permanently deleted" database rows preserved in unallocated B-Tree leaf pages invisible to standard database viewers.

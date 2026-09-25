@@ -66,10 +66,32 @@ function findBytes(
   return -1;
 }
 
+function checkStringContains(data: Uint8Array, str: string): boolean {
+  const enc = new TextEncoder().encode(str);
+  if (enc.length > data.length) return false;
+  for (let i = 0; i <= data.length - enc.length; i++) {
+    let match = true;
+    for (let j = 0; j < enc.length; j++) {
+      if (data[i + j] !== enc[j]) {
+        match = false;
+        break;
+      }
+    }
+    if (match) return true;
+  }
+  return false;
+}
+
 export function carveDiskImage(diskBytes: Uint8Array): CarvedCandidate[] {
   const candidates: CarvedCandidate[] = [];
   const len = diskBytes.length;
   let counter = 1;
+  let pdfCount = 0;
+  let jpgCount = 0;
+  let pngCount = 0;
+  let docxCount = 0;
+  let sqliteCount = 0;
+  let txtCount = 0;
 
   // Step A: Linear signature scan on sector boundaries (and intra-sector for slack)
   for (let offset = 0; offset < len; offset += 16) {
@@ -77,15 +99,18 @@ export function carveDiskImage(diskBytes: Uint8Array): CarvedCandidate[] {
 
     // 1. PDF Carving
     if (matchBytes(diskBytes, offset, SIGNATURES.PDF_HEADER)) {
+      pdfCount++;
       const eofOffset = findBytes(diskBytes, offset + 10, offset + 65536, SIGNATURES.PDF_EOF);
       let end = eofOffset !== -1 ? eofOffset + SIGNATURES.PDF_EOF.length : offset + 9728;
       // align to sector boundary
       end = Math.min(len, Math.ceil(end / SECTOR_SIZE) * SECTOR_SIZE);
       const raw = diskBytes.subarray(offset, end);
+      const isDemoPdf = sector === 10 || checkStringContains(raw, 'CHIMERA') || checkStringContains(raw, 'DISBURSEMENT');
+      const fileName = isDemoPdf ? 'financial_report.pdf' : `carved_document_${pdfCount}.pdf`;
 
       candidates.push({
         id: `FRAG-${String(counter++).padStart(3, '0')}`,
-        name: 'financial_report.pdf',
+        name: fileName,
         fileType: 'pdf',
         offsetStart: offset,
         offsetEnd: end,
@@ -119,6 +144,7 @@ export function carveDiskImage(diskBytes: Uint8Array): CarvedCandidate[] {
 
     // 2. JPEG Carving
     if (matchBytes(diskBytes, offset, SIGNATURES.JPEG_SOI)) {
+      jpgCount++;
       const eoiOffset = findBytes(diskBytes, offset + 10, offset + 32768, SIGNATURES.JPEG_EOI);
       let end: number;
       let footerFound = false;
@@ -141,9 +167,12 @@ export function carveDiskImage(diskBytes: Uint8Array): CarvedCandidate[] {
       }
 
       const raw = diskBytes.subarray(offset, end);
+      const isDemoJpg = sector === 35 || (!footerFound && jpgCount === 1);
+      const fileName = isDemoJpg ? 'photo1.jpg' : `recovered_photo_${jpgCount}.jpg`;
+
       candidates.push({
         id: `FRAG-${String(counter++).padStart(3, '0')}`,
-        name: 'photo1.jpg',
+        name: fileName,
         fileType: 'jpeg',
         offsetStart: offset,
         offsetEnd: end,
@@ -175,8 +204,49 @@ export function carveDiskImage(diskBytes: Uint8Array): CarvedCandidate[] {
       continue;
     }
 
+    // 2b. PNG Carving
+    if (matchBytes(diskBytes, offset, SIGNATURES.PNG_HEADER)) {
+      pngCount++;
+      const iendOffset = findBytes(diskBytes, offset + 8, offset + 65536, SIGNATURES.PNG_IEND);
+      let end = iendOffset !== -1 ? iendOffset + SIGNATURES.PNG_IEND.length : offset + 8192;
+      end = Math.min(len, Math.ceil(end / SECTOR_SIZE) * SECTOR_SIZE);
+      const raw = diskBytes.subarray(offset, end);
+
+      candidates.push({
+        id: `FRAG-${String(counter++).padStart(3, '0')}`,
+        name: `graphic_${pngCount}.png`,
+        fileType: 'png',
+        offsetStart: offset,
+        offsetEnd: end,
+        sectorStart: sector,
+        sectorEnd: Math.floor(end / SECTOR_SIZE) - 1,
+        sizeBytes: end - offset,
+        rawBytes: new Uint8Array(raw),
+        chunks: [
+          {
+            sectorStart: sector,
+            sectorEnd: Math.floor(end / SECTOR_SIZE) - 1,
+            byteOffset: offset,
+            byteLength: end - offset,
+            stitched: false,
+            chunkIndex: 1,
+          },
+        ],
+        carvingNotes: [
+          `PNG header located at sector ${sector}.`,
+          iendOffset !== -1 ? `PNG IEND marker confirmed.` : `Warning: IEND missing.`,
+        ],
+        footerFound: iendOffset !== -1,
+        stitched: false,
+      });
+
+      offset = end - 16;
+      continue;
+    }
+
     // 3. ZIP / DOCX Carving with Intelligent Fragment Stitching
     if (matchBytes(diskBytes, offset, SIGNATURES.ZIP_LOCAL)) {
+      docxCount++;
       const chunk1Start = offset;
       const chunk1Sector = sector;
       const chunk1End = chunk1Start + 10 * SECTOR_SIZE; // 10 sectors body
@@ -245,9 +315,12 @@ export function carveDiskImage(diskBytes: Uint8Array): CarvedCandidate[] {
         notes.push(`Warning: Central Directory not found in subsequent cluster span.`);
       }
 
+      const isDemoDocx = sector === 65 || checkStringContains(totalRaw, 'word/') || checkStringContains(totalRaw, 'MARCUS');
+      const fileName = isDemoDocx ? 'case_notes.docx' : `archive_bundle_${docxCount}.docx`;
+
       candidates.push({
         id: `FRAG-${String(counter++).padStart(3, '0')}`,
-        name: 'case_notes.docx',
+        name: fileName,
         fileType: 'docx',
         offsetStart: chunk1Start,
         offsetEnd: stitched ? chunk2End : chunk1End,
@@ -267,12 +340,15 @@ export function carveDiskImage(diskBytes: Uint8Array): CarvedCandidate[] {
 
     // 4. SQLite Database Carving
     if (matchBytes(diskBytes, offset, SIGNATURES.SQLITE_HEADER)) {
+      sqliteCount++;
       const end = Math.min(len, offset + 18 * SECTOR_SIZE);
       const raw = diskBytes.subarray(offset, end);
+      const isDemoDb = sector === 115 || checkStringContains(raw, 'security_logs');
+      const fileName = isDemoDb ? 'logs.db' : `database_${sqliteCount}.db`;
 
       candidates.push({
         id: `FRAG-${String(counter++).padStart(3, '0')}`,
-        name: 'logs.db',
+        name: fileName,
         fileType: 'sqlite',
         offsetStart: offset,
         offsetEnd: end,
@@ -306,6 +382,7 @@ export function carveDiskImage(diskBytes: Uint8Array): CarvedCandidate[] {
     // 5. Plaintext Evidence in Slack Space
     const checkSlice = diskBytes.subarray(offset, offset + 64);
     if (isHighDensityAscii(checkSlice)) {
+      txtCount++;
       // Find boundary where printable ASCII ends
       let scan = offset;
       while (scan < len && (diskBytes[scan] >= 32 || diskBytes[scan] === 10 || diskBytes[scan] === 13 || diskBytes[scan] === 9)) {
@@ -314,10 +391,12 @@ export function carveDiskImage(diskBytes: Uint8Array): CarvedCandidate[] {
       if (scan - offset >= 128) {
         const end = Math.min(len, Math.ceil(scan / SECTOR_SIZE) * SECTOR_SIZE);
         const raw = diskBytes.subarray(offset, end);
+        const isDemoTxt = sector === 145 || checkStringContains(raw, 'OPERATION_DESTRUCT_MEMO');
+        const fileName = isDemoTxt ? 'readme_evidence.txt' : `slack_memo_${txtCount}.txt`;
 
         candidates.push({
           id: `FRAG-${String(counter++).padStart(3, '0')}`,
-          name: 'readme_evidence.txt',
+          name: fileName,
           fileType: 'txt',
           offsetStart: offset,
           offsetEnd: end,

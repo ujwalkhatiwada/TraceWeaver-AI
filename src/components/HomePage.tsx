@@ -20,6 +20,7 @@ import {
   X,
   Layers,
   Sparkles,
+  Upload,
 } from 'lucide-react';
 import { EvidenceFragment, DiskImageMetadata } from '../types/forensics.ts';
 
@@ -29,6 +30,8 @@ interface HomePageProps {
   onLaunchWorkbench: () => void;
   onOpenPreview: (fragment: EvidenceFragment) => void;
   onOpenPython: () => void;
+  onOpenUpload?: () => void;
+  onSelectScenario?: (scenario: 'ironvault' | 'antiforensics' | 'flashcorrupt') => void;
 }
 
 export const HomePage: React.FC<HomePageProps> = ({
@@ -37,6 +40,8 @@ export const HomePage: React.FC<HomePageProps> = ({
   onLaunchWorkbench,
   onOpenPreview,
   onOpenPython,
+  onOpenUpload,
+  onSelectScenario,
 }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
@@ -80,6 +85,16 @@ export const HomePage: React.FC<HomePageProps> = ({
             <a href="#features" className="hover:text-[#2563EB] transition-none">
               Features
             </a>
+            {onOpenUpload && (
+              <button
+                onClick={onOpenUpload}
+                className="px-3 py-1.5 bg-white hover:bg-neutral-50 text-[#374151] border border-[#D1D5DB] font-medium text-xs rounded-md shadow-2xs transition-none cursor-pointer inline-flex items-center gap-1.5"
+                title="Upload raw forensic disk image (.dd)"
+              >
+                <Upload className="w-3.5 h-3.5 text-[#2563EB]" />
+                <span>Upload .dd</span>
+              </button>
+            )}
             <button
               onClick={onLaunchWorkbench}
               className="px-4 py-2 bg-[#2563EB] hover:bg-blue-700 text-white font-medium text-sm rounded-md shadow-xs transition-none cursor-pointer"
@@ -90,6 +105,15 @@ export const HomePage: React.FC<HomePageProps> = ({
 
           {/* Mobile Hamburger Button */}
           <div className="md:hidden flex items-center gap-2">
+            {onOpenUpload && (
+              <button
+                onClick={onOpenUpload}
+                className="px-2.5 py-1.5 bg-white border border-[#D1D5DB] text-xs font-medium rounded-md shadow-2xs inline-flex items-center gap-1 text-[#374151]"
+              >
+                <Upload className="w-3.5 h-3.5 text-[#2563EB]" />
+                <span>Upload</span>
+              </button>
+            )}
             <button
               onClick={onLaunchWorkbench}
               className="px-3 py-1.5 bg-[#2563EB] text-white text-xs font-medium rounded-md shadow-xs"
@@ -182,6 +206,35 @@ export const HomePage: React.FC<HomePageProps> = ({
               View IR Timeline
             </a>
           </div>
+
+          {/* Custom .dd Image Ingestion Callout Card */}
+          {onOpenUpload && (
+            <div className="pt-2 max-w-2xl mx-auto text-left">
+              <div className="bg-gradient-to-r from-blue-50/70 via-indigo-50/40 to-slate-50/80 border border-blue-200/80 rounded-xl p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xs">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="inline-flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded bg-blue-600 text-white font-semibold uppercase">
+                      Custom Evidence
+                    </span>
+                    <span className="text-xs font-semibold text-neutral-800">
+                      Analyze Your Own .dd Disk Image
+                    </span>
+                  </div>
+                  <p className="text-xs text-neutral-600 leading-relaxed">
+                    Upload any raw bitstream (<code className="font-mono text-[11px] bg-white px-1 py-0.5 rounded border border-neutral-200">.dd</code>, <code className="font-mono text-[11px] bg-white px-1 py-0.5 rounded border border-neutral-200">.raw</code>, <code className="font-mono text-[11px] bg-white px-1 py-0.5 rounded border border-neutral-200">.img</code>) for client-side signature carving, sliding-window Shannon entropy mapping, and automated incident timeline synthesis.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={onOpenUpload}
+                  className="shrink-0 px-4 py-2 bg-[#2563EB] hover:bg-blue-700 text-white font-medium text-xs rounded-lg shadow-xs flex items-center gap-1.5 transition-none cursor-pointer"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>Upload .dd File</span>
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Three Small Statistics */}
           <div className="pt-6 flex flex-wrap items-center justify-center gap-8 text-xs font-mono text-[#6B7280]">

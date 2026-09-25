@@ -9,15 +9,20 @@ import { ForensicWorkbench } from './components/ForensicWorkbench.tsx';
 import { ArtifactPreviewModal } from './components/ArtifactPreviewModal.tsx';
 import { PythonCodeModal } from './components/PythonCodeModal.tsx';
 import { RecoveryChatbot } from './components/RecoveryChatbot.tsx';
+import { UploadDiskModal } from './components/UploadDiskModal.tsx';
 
 import { generateSyntheticDiskImage } from './forensics/syntheticDisk.ts';
 import { runForensicRecoveryPipeline } from './forensics/pipeline.ts';
+import {
+  parseUploadedDiskImage,
+  downloadDiskImage,
+} from './forensics/diskParser.ts';
 import {
   EvidenceFragment,
   DiskImageMetadata,
   DiskSector,
 } from './types/forensics.ts';
-import { MessageSquare } from 'lucide-react';
+import { MessageSquare, Upload } from 'lucide-react';
 import { THEMES } from './types/themes.ts';
 
 export default function App() {
@@ -32,6 +37,7 @@ export default function App() {
   const [selectedPreviewFragment, setSelectedPreviewFragment] = useState<EvidenceFragment | null>(null);
   const [isPythonOpen, setIsPythonOpen] = useState(false);
   const [isChatOpen, setIsChatOpen] = useState(false);
+  const [isUploadOpen, setIsUploadOpen] = useState(false);
 
   // Initialize demonstration disk image on load
   const loadInitialDisk = useCallback(async () => {
@@ -58,6 +64,56 @@ export default function App() {
     loadInitialDisk();
   }, [loadInitialDisk]);
 
+  // Handle uploaded .dd / raw disk image
+  const handleUploadDisk = async (file: File) => {
+    setIsProcessing(true);
+    try {
+      const result = await parseUploadedDiskImage(file);
+      setDiskBytes(result.diskBytes);
+      setMetadata(result.metadata);
+      setSectors(result.sectors);
+      setFragments(result.fragments);
+      // Automatically switch to workbench to inspect the uploaded image
+      setViewMode('workbench');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (err) {
+      console.error('Failed to parse uploaded disk image:', err);
+      throw err;
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // Switch between benchmark scenarios
+  const handleSelectScenario = async (
+    scenario: 'ironvault' | 'antiforensics' | 'flashcorrupt'
+  ) => {
+    setIsProcessing(true);
+    try {
+      const synthetic = generateSyntheticDiskImage(scenario);
+      setDiskBytes(synthetic.diskBytes);
+      setSectors(synthetic.sectors);
+
+      const result = await runForensicRecoveryPipeline(
+        synthetic.diskBytes,
+        synthetic.metadata
+      );
+      setFragments(result.fragments);
+      setMetadata(result.metadata);
+    } catch (err) {
+      console.error('Failed to switch scenario:', err);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // Export current disk as .dd
+  const handleDownloadCurrentDisk = () => {
+    if (diskBytes) {
+      downloadDiskImage(diskBytes, metadata?.filename || 'evidence_image.dd');
+    }
+  };
+
   if (!metadata) {
     return (
       <div className="min-h-screen bg-white text-[#1F2937] flex items-center justify-center font-sans">
@@ -82,6 +138,8 @@ export default function App() {
           }}
           onOpenPreview={(fragment) => setSelectedPreviewFragment(fragment)}
           onOpenPython={() => setIsPythonOpen(true)}
+          onOpenUpload={() => setIsUploadOpen(true)}
+          onSelectScenario={handleSelectScenario}
         />
       ) : (
         /* View 2: Technical Forensic Workbench */
@@ -95,6 +153,9 @@ export default function App() {
           }}
           onOpenPreview={(fragment) => setSelectedPreviewFragment(fragment)}
           onOpenPython={() => setIsPythonOpen(true)}
+          onOpenUpload={() => setIsUploadOpen(true)}
+          onSelectScenario={handleSelectScenario}
+          onDownloadCurrentDisk={handleDownloadCurrentDisk}
         />
       )}
 
@@ -109,6 +170,16 @@ export default function App() {
       </button>
 
       {/* Reusable Modals */}
+      <UploadDiskModal
+        isOpen={isUploadOpen}
+        onClose={() => setIsUploadOpen(false)}
+        onUploadFile={handleUploadDisk}
+        onSelectScenario={handleSelectScenario}
+        currentMetadata={metadata}
+        currentDiskBytes={diskBytes}
+        isProcessing={isProcessing}
+      />
+
       <RecoveryChatbot
         isOpen={isChatOpen}
         onClose={() => setIsChatOpen(false)}
