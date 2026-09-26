@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   ArrowLeft,
   HardDrive,
@@ -21,6 +21,13 @@ import {
   Sparkles,
   Clock,
   Upload,
+  Terminal,
+  FileCode,
+  Hash,
+  Filter,
+  Compass,
+  Lock,
+  ArrowUpRight,
 } from 'lucide-react';
 import {
   EvidenceFragment,
@@ -28,8 +35,16 @@ import {
   DiskSector,
 } from '../types/forensics.ts';
 import { ForensicTimelineView } from './ForensicTimelineView.tsx';
+import {
+  downloadEvidenceFragmentFile,
+  extractDiskStrings,
+  inspectMasterBootRecord,
+  ExtractedStringItem,
+} from '../forensics/diskParser.ts';
+import { calculateShannonEntropy } from '../forensics/cryptoUtils.ts';
 
 interface ForensicWorkbenchProps {
+  diskBytes?: Uint8Array | null;
   metadata: DiskImageMetadata;
   fragments: EvidenceFragment[];
   sectors: DiskSector[];
@@ -45,12 +60,14 @@ type WorkbenchTab =
   | 'overview'
   | 'timeline'
   | 'recovered_files'
+  | 'strings_search'
   | 'sector_map'
   | 'hex_inspector'
   | 'ai_assistant'
   | 'dfir_report';
 
 export const ForensicWorkbench: React.FC<ForensicWorkbenchProps> = ({
+  diskBytes,
   metadata,
   fragments,
   sectors,
@@ -67,16 +84,6 @@ export const ForensicWorkbench: React.FC<ForensicWorkbenchProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
-
-  // Sector Map Selection
-  const [selectedSectorIndex, setSelectedSectorIndex] = useState<number>(65);
-
-  // Hex Inspector State
-  const [hexSelectedFragmentId, setHexSelectedFragmentId] = useState<string>(
-    fragments[0]?.id || ''
-  );
-  const [selectedByteIdx, setSelectedByteIdx] = useState<number>(0);
-  const [copiedHex, setCopiedHex] = useState(false);
 
   // Keyboard shortcut listener (Cmd/Ctrl + K or Escape)
   useEffect(() => {
@@ -136,11 +143,118 @@ export const ForensicWorkbench: React.FC<ForensicWorkbenchProps> = ({
   // DFIR Report State
   const [copiedReport, setCopiedReport] = useState(false);
 
+  // Sector Map Selection
+  const [selectedSectorIndex, setSelectedSectorIndex] = useState<number>(65);
+
+  // Hex Inspector State
+  const [hexMode, setHexMode] = useState<'fragments' | 'sectors'>('fragments');
+  const [selectedHexLba, setSelectedHexLba] = useState<number>(0);
+  const [hexSelectedFragmentId, setHexSelectedFragmentId] = useState<string>(
+    fragments[0]?.id || ''
+  );
+  const [selectedByteIdx, setSelectedByteIdx] = useState<number>(0);
+  const [copiedHex, setCopiedHex] = useState(false);
+
+  // Strings Search & IOC Hunter State
+  const [stringsCategoryFilter, setStringsCategoryFilter] = useState<
+    'all' | 'network' | 'email' | 'url' | 'financial' | 'command' | 'credentials'
+  >('all');
+  const [stringsSearchTerm, setStringsSearchTerm] = useState('');
+
+  // Extract strings across the disk bitstream
+  const allExtractedStrings = useMemo(() => {
+    if (diskBytes && diskBytes.length > 0) {
+      return extractDiskStrings(diskBytes, 4, 400);
+    }
+    // Reconstruct strings from fragments rawBytes if diskBytes is missing
+    const combinedBytes = new Uint8Array(
+      fragments.reduce((acc, f) => acc + (f.rawBytes?.length || 0), 0)
+    );
+    let offset = 0;
+    for (const f of fragments) {
+      if (f.rawBytes) {
+        combinedBytes.set(f.rawBytes, offset);
+        offset += f.rawBytes.length;
+      }
+    }
+    return extractDiskStrings(combinedBytes, 4, 400);
+  }, [diskBytes, fragments]);
+
+  // Filtered strings
+  const filteredStrings = useMemo(() => {
+    let list = allExtractedStrings;
+    if (stringsCategoryFilter !== 'all') {
+      list = list.filter((s) => s.category === stringsCategoryFilter);
+    }
+    if (stringsSearchTerm.trim()) {
+      const q = stringsSearchTerm.toLowerCase().trim();
+      list = list.filter(
+        (s) =>
+          s.text.toLowerCase().includes(q) ||
+          `sector ${s.sectorLba}`.includes(q) ||
+          s.sectorLba.toString() === q
+      );
+    }
+    return list;
+  }, [allExtractedStrings, stringsCategoryFilter, stringsSearchTerm]);
+
+  // Master Boot Record (MBR) Analysis for Overview
+  const mbrResult = useMemo(() => {
+    return inspectMasterBootRecord(diskBytes || new Uint8Array(512));
+  }, [diskBytes]);
+
+  const totalSectorsCount = Math.max(
+    1,
+    sectors.length || metadata.sectorCount || (diskBytes ? Math.ceil(diskBytes.length / 512) : 256)
+  );
+
   // Find active hex fragment
   const activeHexFrag =
     fragments.find((f) => f.id === hexSelectedFragmentId) || fragments[0];
-  const hexBytes = activeHexFrag?.rawBytes || new Uint8Array(256);
-  const displayBytes = hexBytes.subarray(0, Math.min(hexBytes.length, 256));
+
+  let displayBytes: Uint8Array;
+  let activeHexLabel = '';
+  let activeHexEntropy = 0;
+  let activeSectorOffsetBase = 0;
+
+  if (hexMode === 'sectors') {
+    const safeLba = Math.max(0, Math.min(selectedHexLba, totalSectorsCount - 1));
+    activeSectorOffsetBase = safeLba * 512;
+    if (diskBytes && diskBytes.length >= activeSectorOffsetBase) {
+      const end = Math.min(diskBytes.length, activeSectorOffsetBase + 512);
+      displayBytes = diskBytes.slice(activeSectorOffsetBase, end);
+    } else {
+      displayBytes = new Uint8Array(512);
+    }
+    activeHexEntropy = calculateShannonEntropy(displayBytes);
+
+    // Identify bound fragment for this sector if any
+    const boundFrag = fragments.find(
+      (f) => safeLba >= f.sectorStart && safeLba <= f.sectorEnd
+    );
+    if (safeLba === 0) {
+      activeHexLabel = 'Physical Sector 0: Master Boot Record (MBR) & Partition Table';
+    } else if (boundFrag) {
+      activeHexLabel = `Physical Sector ${safeLba}: Allocated to ${boundFrag.name} (${boundFrag.fileType.toUpperCase()})`;
+    } else if (activeHexEntropy === 0) {
+      activeHexLabel = `Physical Sector ${safeLba}: Zero-Filled / Wiped Slack (Anti-Forensics)`;
+    } else {
+      activeHexLabel = `Physical Sector ${safeLba}: Raw Unallocated Disk Cluster`;
+    }
+  } else {
+    const hexBytes = activeHexFrag?.rawBytes || new Uint8Array(256);
+    displayBytes = hexBytes.subarray(0, Math.min(hexBytes.length, 512));
+    activeHexLabel = `${activeHexFrag?.name || 'Artifact'} (${activeHexFrag?.fileType.toUpperCase() || 'DATA'})`;
+    activeHexEntropy = calculateShannonEntropy(displayBytes);
+  }
+
+  // Jump from String Hunter to Hex Inspector at specific sector and byte
+  const handleJumpToStringHex = (strItem: ExtractedStringItem) => {
+    setHexMode('sectors');
+    setSelectedHexLba(strItem.sectorLba);
+    setSelectedByteIdx(strItem.sectorOffset);
+    setActiveTab('hex_inspector');
+  };
 
   // Current selected byte computations
   const currentByte = displayBytes[selectedByteIdx] ?? 0;
@@ -571,6 +685,7 @@ Demonstration dataset created for Hackathon Track 01.
               <option value="overview">Overview</option>
               <option value="timeline">Forensic Timeline (IR Team)</option>
               <option value="recovered_files">Recovered Files</option>
+              <option value="strings_search">Strings & IOC Hunter ({allExtractedStrings.length})</option>
               <option value="sector_map">Sector Map</option>
               <option value="hex_inspector">Hex Inspector</option>
               <option value="ai_assistant">AI Assistant (TraceWeaver AI)</option>
@@ -635,6 +750,27 @@ Demonstration dataset created for Hackathon Track 01.
                 }`}
               >
                 {searchQuery.trim() ? filteredFragments.length : fragments.length}
+              </span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('strings_search')}
+              className={`w-full text-left px-3 py-2 rounded-md text-xs font-medium flex items-center gap-2 cursor-pointer transition-none ${
+                activeTab === 'strings_search'
+                  ? 'bg-[#2563EB] text-white font-semibold'
+                  : 'text-[#4B5563] hover:bg-white hover:text-[#1F2937]'
+              }`}
+            >
+              <Terminal className="w-4 h-4" />
+              <span>Strings & IOC Hunter</span>
+              <span
+                className={`ml-auto text-[10px] font-mono px-1.5 py-0.2 rounded font-bold ${
+                  activeTab === 'strings_search'
+                    ? 'bg-blue-800 text-white'
+                    : 'bg-[#FEF2F2] text-[#DC2626] border border-[#FECACA]'
+                }`}
+              >
+                {allExtractedStrings.length}
               </span>
             </button>
 
@@ -891,6 +1027,104 @@ Demonstration dataset created for Hackathon Track 01.
                   </div>
                 </div>
               </div>
+
+              {/* Physical Media & Master Boot Record (MBR) Analysis Card */}
+              <div className="p-4 bg-white border border-[#E5E7EB] rounded-lg space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div>
+                    <h4 className="text-xs font-mono font-bold uppercase tracking-wider text-[#1F2937] flex items-center gap-1.5">
+                      <Binary className="w-3.5 h-3.5 text-[#2563EB]" />
+                      Master Boot Record (MBR) & Partition Table (LBA 0)
+                    </h4>
+                    <p className="text-[11px] text-[#6B7280] mt-0.5">
+                      {mbrResult.detectionSummary}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => {
+                        setHexMode('sectors');
+                        setSelectedHexLba(0);
+                        setSelectedByteIdx(0);
+                        setActiveTab('hex_inspector');
+                      }}
+                      className="px-2.5 py-1 bg-[#EFF6FF] hover:bg-blue-100 text-[#2563EB] rounded text-xs font-medium inline-flex items-center gap-1 cursor-pointer transition-none"
+                    >
+                      <Eye className="w-3 h-3" />
+                      <span>Inspect LBA 0 in Hex</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] font-mono bg-[#F8F9FA] p-3 rounded border border-[#E5E7EB]">
+                  <div>
+                    <span className="text-[#6B7280] block text-[10px]">MBR SIGNATURE</span>
+                    <span className={`font-bold flex items-center gap-1 ${mbrResult.hasValidSignature ? 'text-[#16A34A]' : 'text-[#DC2626]'}`}>
+                      {mbrResult.hasValidSignature ? (
+                        <CheckCircle2 className="w-3 h-3 text-[#16A34A]" />
+                      ) : (
+                        <AlertTriangle className="w-3 h-3 text-[#DC2626]" />
+                      )}
+                      {mbrResult.signatureHex} {mbrResult.hasValidSignature ? '(VALID)' : '(NON-STANDARD)'}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[#6B7280] block text-[10px]">BOOTSTRAP CODE</span>
+                    <span className="font-semibold text-[#1F2937]">
+                      {mbrResult.hasBootCode ? 'Present (x86/BIOS Code)' : 'Empty / Zero-filled'}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[#6B7280] block text-[10px]">PARTITION ENTRIES</span>
+                    <span className="font-semibold text-[#2563EB]">
+                      {mbrResult.partitionEntries.length > 0 ? `${mbrResult.partitionEntries.length} Table Slot(s) Active` : 'Raw Superfloppy / Unpartitioned'}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[#6B7280] block text-[10px]">BLOCK GEOMETRY</span>
+                    <span className="font-semibold text-[#1F2937]">
+                      512 Bytes / Sector (LBA Mode)
+                    </span>
+                  </div>
+                </div>
+
+                {mbrResult.partitionEntries.length > 0 && (
+                  <div className="border border-[#E5E7EB] rounded overflow-hidden">
+                    <table className="w-full text-left font-mono text-[11px]">
+                      <thead className="bg-[#F3F4F6] text-[#4B5563] text-[10px] border-b border-[#E5E7EB]">
+                        <tr>
+                          <th className="py-1.5 px-3">SLOT</th>
+                          <th className="py-1.5 px-3">BOOTABLE</th>
+                          <th className="py-1.5 px-3">TYPE</th>
+                          <th className="py-1.5 px-3">START LBA</th>
+                          <th className="py-1.5 px-3">SECTORS</th>
+                          <th className="py-1.5 px-3 text-right">SIZE</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#E5E7EB]">
+                        {mbrResult.partitionEntries.map((p) => (
+                          <tr key={p.slot} className="hover:bg-[#F9FAFB]">
+                            <td className="py-1.5 px-3 font-semibold text-[#1F2937]">Slot #{p.slot}</td>
+                            <td className="py-1.5 px-3">
+                              {p.bootable ? (
+                                <span className="text-[#16A34A] font-bold">0x80 (ACTIVE)</span>
+                              ) : (
+                                <span className="text-[#6B7280]">0x00 (NO)</span>
+                              )}
+                            </td>
+                            <td className="py-1.5 px-3 font-bold text-[#2563EB]">
+                              {p.typeHex} ({p.typeName})
+                            </td>
+                            <td className="py-1.5 px-3 text-[#1F2937]">{p.startLba}</td>
+                            <td className="py-1.5 px-3 text-[#1F2937]">{p.sizeSectors.toLocaleString()}</td>
+                            <td className="py-1.5 px-3 text-right font-semibold text-[#1F2937]">{p.sizeKb} KB</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
@@ -995,13 +1229,23 @@ Demonstration dataset created for Hackathon Track 01.
                               )}
                             </td>
                             <td className="py-3 px-4 text-right">
-                              <button
-                                onClick={() => onOpenPreview(frag)}
-                                className="px-2.5 py-1 rounded bg-[#2563EB] hover:bg-blue-700 text-white font-medium text-xs inline-flex items-center gap-1 cursor-pointer transition-none"
-                              >
-                                <Eye className="w-3 h-3" />
-                                <span>Preview</span>
-                              </button>
+                              <div className="inline-flex items-center gap-1.5 justify-end">
+                                <button
+                                  onClick={() => onOpenPreview(frag)}
+                                  className="px-2.5 py-1 rounded bg-[#2563EB] hover:bg-blue-700 text-white font-medium text-xs inline-flex items-center gap-1 cursor-pointer transition-none"
+                                >
+                                  <Eye className="w-3 h-3" />
+                                  <span>Preview</span>
+                                </button>
+                                <button
+                                  onClick={() => downloadEvidenceFragmentFile(frag)}
+                                  className="px-2.5 py-1 rounded bg-white hover:bg-[#F3F4F6] text-[#374151] border border-[#D1D5DB] font-medium text-xs inline-flex items-center gap-1 cursor-pointer transition-none"
+                                  title={`Download ${frag.name} file to local system`}
+                                >
+                                  <Download className="w-3 h-3 text-[#2563EB]" />
+                                  <span className="hidden sm:inline">Save</span>
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         );
@@ -1018,6 +1262,210 @@ Demonstration dataset created for Hackathon Track 01.
                               Clear Search Filter
                             </button>
                           </div>
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* TAB: STRINGS & IOC HUNTER */}
+          {activeTab === 'strings_search' && (
+            <div className="space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-lg font-bold text-[#1F2937] flex items-center gap-2">
+                    <Terminal className="w-5 h-5 text-[#2563EB]" />
+                    <span>Disk-Wide Strings & IOC Keyword Hunter</span>
+                  </h3>
+                  <p className="text-xs text-[#6B7280]">
+                    Full bitstream string carving across all physical sectors. Identifies network artifacts, commands, email addresses, and anti-forensics wipers.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-mono text-[#6B7280]">
+                    Matched: <strong className="text-[#1F2937]">{filteredStrings.length}</strong> / {allExtractedStrings.length}
+                  </span>
+                </div>
+              </div>
+
+              {/* Category Pills & Search Box */}
+              <div className="bg-[#F8F9FA] p-3 border border-[#E5E7EB] rounded-lg space-y-3">
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+                  {/* Category Pills */}
+                  <div className="flex flex-wrap gap-1.5 text-xs font-mono">
+                    <button
+                      onClick={() => setStringsCategoryFilter('all')}
+                      className={`px-2.5 py-1 rounded text-xs transition-none cursor-pointer font-medium ${
+                        stringsCategoryFilter === 'all'
+                          ? 'bg-[#2563EB] text-white font-semibold'
+                          : 'bg-white text-[#4B5563] border border-[#E5E7EB] hover:bg-neutral-50'
+                      }`}
+                    >
+                      All ({allExtractedStrings.length})
+                    </button>
+                    <button
+                      onClick={() => setStringsCategoryFilter('financial')}
+                      className={`px-2.5 py-1 rounded text-xs transition-none cursor-pointer font-medium ${
+                        stringsCategoryFilter === 'financial'
+                          ? 'bg-[#2563EB] text-white font-semibold'
+                          : 'bg-white text-[#D97706] border border-[#FDE68A] hover:bg-amber-50'
+                      }`}
+                    >
+                      Financial ({allExtractedStrings.filter((s) => s.category === 'financial').length})
+                    </button>
+                    <button
+                      onClick={() => setStringsCategoryFilter('command')}
+                      className={`px-2.5 py-1 rounded text-xs transition-none cursor-pointer font-medium ${
+                        stringsCategoryFilter === 'command'
+                          ? 'bg-[#2563EB] text-white font-semibold'
+                          : 'bg-white text-[#DC2626] border border-[#FECACA] hover:bg-red-50'
+                      }`}
+                    >
+                      Commands / Wipers ({allExtractedStrings.filter((s) => s.category === 'command').length})
+                    </button>
+                    <button
+                      onClick={() => setStringsCategoryFilter('network')}
+                      className={`px-2.5 py-1 rounded text-xs transition-none cursor-pointer font-medium ${
+                        stringsCategoryFilter === 'network'
+                          ? 'bg-[#2563EB] text-white font-semibold'
+                          : 'bg-white text-[#2563EB] border border-[#BFDBFE] hover:bg-blue-50'
+                      }`}
+                    >
+                      Network / IPs ({allExtractedStrings.filter((s) => s.category === 'network').length})
+                    </button>
+                    <button
+                      onClick={() => setStringsCategoryFilter('email')}
+                      className={`px-2.5 py-1 rounded text-xs transition-none cursor-pointer font-medium ${
+                        stringsCategoryFilter === 'email'
+                          ? 'bg-[#2563EB] text-white font-semibold'
+                          : 'bg-white text-[#4B5563] border border-[#E5E7EB] hover:bg-neutral-50'
+                      }`}
+                    >
+                      Email ({allExtractedStrings.filter((s) => s.category === 'email').length})
+                    </button>
+                    <button
+                      onClick={() => setStringsCategoryFilter('url')}
+                      className={`px-2.5 py-1 rounded text-xs transition-none cursor-pointer font-medium ${
+                        stringsCategoryFilter === 'url'
+                          ? 'bg-[#2563EB] text-white font-semibold'
+                          : 'bg-white text-[#4B5563] border border-[#E5E7EB] hover:bg-neutral-50'
+                      }`}
+                    >
+                      URLs ({allExtractedStrings.filter((s) => s.category === 'url').length})
+                    </button>
+                    <button
+                      onClick={() => setStringsCategoryFilter('credentials')}
+                      className={`px-2.5 py-1 rounded text-xs transition-none cursor-pointer font-medium ${
+                        stringsCategoryFilter === 'credentials'
+                          ? 'bg-[#2563EB] text-white font-semibold'
+                          : 'bg-white text-[#7C3AED] border border-[#DDD6FE] hover:bg-purple-50'
+                      }`}
+                    >
+                      Credentials ({allExtractedStrings.filter((s) => s.category === 'credentials').length})
+                    </button>
+                  </div>
+
+                  {/* Search Query Input */}
+                  <div className="relative shrink-0 sm:w-64">
+                    <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-[#9CA3AF]" />
+                    <input
+                      type="text"
+                      value={stringsSearchTerm}
+                      onChange={(e) => setStringsSearchTerm(e.target.value)}
+                      placeholder="Search string, sector, or keyword..."
+                      className="w-full pl-8 pr-3 py-1.5 bg-white border border-[#E5E7EB] rounded-md text-xs text-[#1F2937] focus:outline-none focus:ring-1 focus:ring-[#2563EB]"
+                    />
+                    {stringsSearchTerm && (
+                      <button
+                        onClick={() => setStringsSearchTerm('')}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Strings Table */}
+              <div className="border border-[#E5E7EB] rounded-lg overflow-x-auto max-h-[460px] overflow-y-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-[#F9FAFB] border-b border-[#E5E7EB] text-[#6B7280] font-mono text-[11px] sticky top-0 z-10">
+                    <tr>
+                      <th className="py-2.5 px-3">EXTRACTED STRING ARTIFACT</th>
+                      <th className="py-2.5 px-3">CATEGORY</th>
+                      <th className="py-2.5 px-3">SECTOR (LBA)</th>
+                      <th className="py-2.5 px-3">BYTE OFFSET</th>
+                      <th className="py-2.5 px-3">LEN</th>
+                      <th className="py-2.5 px-3 text-right">ACTION</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#E5E7EB] font-mono">
+                    {filteredStrings.length > 0 ? (
+                      filteredStrings.map((s) => (
+                        <tr key={s.id} className="hover:bg-[#F9FAFB]">
+                          <td className="py-2 px-3 text-[#1F2937] font-semibold max-w-xs sm:max-w-md truncate" title={s.text}>
+                            {s.text}
+                          </td>
+                          <td className="py-2 px-3">
+                            {s.category === 'financial' ? (
+                              <span className="px-2 py-0.5 rounded bg-[#FFFBEB] text-[#D97706] border border-[#FDE68A] text-[10px] font-bold">
+                                FINANCIAL
+                              </span>
+                            ) : s.category === 'command' ? (
+                              <span className="px-2 py-0.5 rounded bg-[#FEF2F2] text-[#DC2626] border border-[#FECACA] text-[10px] font-bold">
+                                COMMAND / WIPER
+                              </span>
+                            ) : s.category === 'network' ? (
+                              <span className="px-2 py-0.5 rounded bg-[#EFF6FF] text-[#2563EB] border border-[#BFDBFE] text-[10px] font-bold">
+                                NETWORK / IP
+                              </span>
+                            ) : s.category === 'email' ? (
+                              <span className="px-2 py-0.5 rounded bg-[#F0FDF4] text-[#16A34A] border border-[#BBF7D0] text-[10px] font-bold">
+                                EMAIL
+                              </span>
+                            ) : s.category === 'url' ? (
+                              <span className="px-2 py-0.5 rounded bg-[#F3F4F6] text-[#4B5563] border border-[#E5E7EB] text-[10px] font-bold">
+                                URL
+                              </span>
+                            ) : s.category === 'credentials' ? (
+                              <span className="px-2 py-0.5 rounded bg-[#FAF5FF] text-[#7C3AED] border border-[#DDD6FE] text-[10px] font-bold">
+                                CREDENTIALS
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded bg-[#F3F4F6] text-[#6B7280] text-[10px]">
+                                PLAINTEXT
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-2 px-3 text-[#1F2937]">
+                            LBA {s.sectorLba}
+                          </td>
+                          <td className="py-2 px-3 text-[#6B7280]">
+                            0x{s.offset.toString(16).padStart(8, '0').toUpperCase()}
+                          </td>
+                          <td className="py-2 px-3 text-[#6B7280]">
+                            {s.length} B
+                          </td>
+                          <td className="py-2 px-3 text-right">
+                            <button
+                              onClick={() => handleJumpToStringHex(s)}
+                              className="px-2.5 py-1 rounded bg-[#EFF6FF] hover:bg-blue-100 text-[#2563EB] font-medium text-xs inline-flex items-center gap-1 cursor-pointer transition-none"
+                              title={`Inspect Sector ${s.sectorLba} at offset +${s.sectorOffset} in Hex`}
+                            >
+                              <Binary className="w-3 h-3" />
+                              <span>Inspect Hex</span>
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan={6} className="py-8 text-center text-[#6B7280]">
+                          No strings matching current filter "{stringsSearchTerm}".
                         </td>
                       </tr>
                     )}
@@ -1125,7 +1573,7 @@ Demonstration dataset created for Hackathon Track 01.
           {/* TAB 4: HEX INSPECTOR */}
           {activeTab === 'hex_inspector' && (
             <div className="space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div>
                   <h3 className="text-lg font-bold text-[#1F2937]">Hex Inspector</h3>
                   <p className="text-xs text-[#6B7280]">
@@ -1133,23 +1581,125 @@ Demonstration dataset created for Hackathon Track 01.
                   </p>
                 </div>
 
-                <div className="flex items-center gap-2">
-                  <label className="text-xs text-[#6B7280] font-mono">ARTIFACT:</label>
-                  <select
-                    value={hexSelectedFragmentId}
-                    onChange={(e) => {
-                      setHexSelectedFragmentId(e.target.value);
-                      setSelectedByteIdx(0);
-                    }}
-                    className="p-1.5 bg-white border border-[#E5E7EB] rounded text-xs font-mono text-[#1F2937]"
-                  >
-                    {fragments.map((f) => (
-                      <option key={f.id} value={f.id}>
-                        {f.name} ({f.fileType.toUpperCase()})
-                      </option>
-                    ))}
-                  </select>
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* Mode Selector Toggle */}
+                  <div className="inline-flex rounded-md border border-[#D1D5DB] p-0.5 bg-[#F3F4F6] text-xs font-mono">
+                    <button
+                      onClick={() => {
+                        setHexMode('fragments');
+                        setSelectedByteIdx(0);
+                      }}
+                      className={`px-2.5 py-1 rounded transition-none cursor-pointer font-medium ${
+                        hexMode === 'fragments'
+                          ? 'bg-white text-[#1F2937] shadow-2xs font-semibold'
+                          : 'text-[#4B5563] hover:text-[#111827]'
+                      }`}
+                    >
+                      Carved Fragments
+                    </button>
+                    <button
+                      onClick={() => {
+                        setHexMode('sectors');
+                        setSelectedByteIdx(0);
+                      }}
+                      className={`px-2.5 py-1 rounded transition-none cursor-pointer font-medium ${
+                        hexMode === 'sectors'
+                          ? 'bg-white text-[#1F2937] shadow-2xs font-semibold'
+                          : 'text-[#4B5563] hover:text-[#111827]'
+                      }`}
+                    >
+                      Raw Sectors (LBA 0..N)
+                    </button>
+                  </div>
+
+                  {hexMode === 'fragments' ? (
+                    <div className="flex items-center gap-2">
+                      <label className="text-xs text-[#6B7280] font-mono">ARTIFACT:</label>
+                      <select
+                        value={hexSelectedFragmentId}
+                        onChange={(e) => {
+                          setHexSelectedFragmentId(e.target.value);
+                          setSelectedByteIdx(0);
+                        }}
+                        className="p-1.5 bg-white border border-[#E5E7EB] rounded text-xs font-mono text-[#1F2937]"
+                      >
+                        {fragments.map((f) => (
+                          <option key={f.id} value={f.id}>
+                            {f.name} ({f.fileType.toUpperCase()})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1.5">
+                      <label className="text-xs text-[#6B7280] font-mono">LBA:</label>
+                      <button
+                        onClick={() => {
+                          setSelectedHexLba((prev) => Math.max(0, prev - 1));
+                          setSelectedByteIdx(0);
+                        }}
+                        disabled={selectedHexLba <= 0}
+                        className="px-2 py-1 bg-white border border-[#E5E7EB] hover:bg-neutral-50 rounded text-xs font-mono disabled:opacity-40 cursor-pointer"
+                        title="Previous Sector"
+                      >
+                        ◄
+                      </button>
+                      <input
+                        type="number"
+                        min={0}
+                        max={totalSectorsCount - 1}
+                        value={selectedHexLba}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value, 10);
+                          if (!isNaN(val)) {
+                            setSelectedHexLba(Math.max(0, Math.min(val, totalSectorsCount - 1)));
+                            setSelectedByteIdx(0);
+                          }
+                        }}
+                        className="w-16 p-1 text-center bg-white border border-[#E5E7EB] rounded text-xs font-mono text-[#1F2937]"
+                      />
+                      <span className="text-xs font-mono text-[#6B7280]">/ {totalSectorsCount - 1}</span>
+                      <button
+                        onClick={() => {
+                          setSelectedHexLba((prev) => Math.min(totalSectorsCount - 1, prev + 1));
+                          setSelectedByteIdx(0);
+                        }}
+                        disabled={selectedHexLba >= totalSectorsCount - 1}
+                        className="px-2 py-1 bg-white border border-[#E5E7EB] hover:bg-neutral-50 rounded text-xs font-mono disabled:opacity-40 cursor-pointer"
+                        title="Next Sector"
+                      >
+                        ►
+                      </button>
+                    </div>
+                  )}
                 </div>
+              </div>
+
+              {/* Status & Offset Banner */}
+              <div className="p-2.5 bg-[#F8F9FA] border border-[#E5E7EB] rounded flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs font-mono">
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-[#1F2937]">{activeHexLabel}</span>
+                  <span className="text-[#6B7280]">•</span>
+                  <span className="text-[#4B5563]">
+                    Entropy: <strong className={activeHexEntropy === 0 ? 'text-[#DC2626]' : 'text-[#2563EB]'}>{activeHexEntropy.toFixed(3)}</strong>
+                  </span>
+                </div>
+                {hexMode === 'sectors' && (
+                  <div className="flex items-center gap-2 text-[11px] text-[#6B7280]">
+                    <span>
+                      Range: 0x{activeSectorOffsetBase.toString(16).padStart(8, '0').toUpperCase()} - 0x{(activeSectorOffsetBase + displayBytes.length - 1).toString(16).padStart(8, '0').toUpperCase()}
+                    </span>
+                    <button
+                      onClick={() => {
+                        setSelectedHexLba(0);
+                        setSelectedByteIdx(0);
+                      }}
+                      className="text-[#2563EB] hover:underline cursor-pointer"
+                    >
+                      Jump to LBA 0 (MBR)
+                    </button>
+                  </div>
+                )}
               </div>
 
               {/* Main Hex Viewer Grid */}
@@ -1165,7 +1715,7 @@ Demonstration dataset created for Hackathon Track 01.
                   {Array.from({ length: Math.ceil(displayBytes.length / 16) }).map((_, rowIdx) => {
                     const rowOffset = rowIdx * 16;
                     const rowSlice = displayBytes.subarray(rowOffset, rowOffset + 16);
-                    const hexOffsetStr = rowOffset.toString(16).padStart(8, '0').toUpperCase();
+                    const hexOffsetStr = (activeSectorOffsetBase + rowOffset).toString(16).padStart(8, '0').toUpperCase();
 
                     return (
                       <div key={rowIdx} className="flex items-center py-0.5 hover:bg-[#F9FAFB]">
@@ -1210,9 +1760,16 @@ Demonstration dataset created for Hackathon Track 01.
 
                   <div className="space-y-1.5">
                     <div className="flex justify-between py-1 border-b border-[#E5E7EB]/60">
-                      <span className="text-[#6B7280]">Offset</span>
+                      <span className="text-[#6B7280]">Physical Offset</span>
                       <span className="font-bold text-[#1F2937]">
-                        0x{selectedByteIdx.toString(16).toUpperCase()} ({selectedByteIdx})
+                        0x{(activeSectorOffsetBase + selectedByteIdx).toString(16).toUpperCase()}
+                      </span>
+                    </div>
+
+                    <div className="flex justify-between py-1 border-b border-[#E5E7EB]/60">
+                      <span className="text-[#6B7280]">Sector Offset</span>
+                      <span className="font-bold text-[#1F2937]">
+                        +{selectedByteIdx} (0x{selectedByteIdx.toString(16).toUpperCase()})
                       </span>
                     </div>
 

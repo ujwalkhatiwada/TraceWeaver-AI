@@ -144,6 +144,7 @@ export default function App() {
       ) : (
         /* View 2: Technical Forensic Workbench */
         <ForensicWorkbench
+          diskBytes={diskBytes}
           metadata={metadata}
           fragments={fragments}
           sectors={sectors}
